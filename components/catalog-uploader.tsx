@@ -17,24 +17,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { CatalogIssue, ValidationResponse } from "@/lib/catalog-rules";
+import { downloadBase64Xlsx, downloadSupplierZip, sanitizeFolderName } from "@/lib/download-packages";
 import { cn } from "@/lib/utils";
 
 type Status = "idle" | "validating" | "done" | "error";
 type SupplierCurrency = "USD" | "CAD";
 const INLINE_EMAIL_ISSUE_LIMIT = 20;
-
-function downloadBase64Xlsx(base64: string, fileName: string) {
-  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
-}
 
 function buildSupplierEmail(result: ValidationResponse) {
   const errorCount = result.issues.filter((issue) => issue.severity === "error").length;
@@ -100,6 +88,7 @@ export function CatalogUploader() {
   const [field, setField] = useState("all");
   const [query, setQuery] = useState("");
   const [emailCopied, setEmailCopied] = useState(false);
+  const [supplierName, setSupplierName] = useState("");
 
   async function validateFile(file: File) {
     setError("");
@@ -113,6 +102,7 @@ export function CatalogUploader() {
 
     setStatus("validating");
     setFileName(file.name);
+    setSupplierName(sanitizeFolderName(file.name));
     setEmailCopied(false);
 
     const body = new FormData();
@@ -172,6 +162,31 @@ export function CatalogUploader() {
     await navigator.clipboard.writeText(supplierEmail);
     setEmailCopied(true);
     window.setTimeout(() => setEmailCopied(false), 2200);
+  }
+
+  async function downloadCatalogPackage() {
+    if (!result) return;
+    await downloadSupplierZip({
+      supplierName: supplierName || result.fileName,
+      packageLabel: "catalog",
+      files: [
+        {
+          kind: "base64",
+          path: `Catalog/01 Validation Report/${result.reportFileName}`,
+          content: result.reportBase64
+        },
+        {
+          kind: "base64",
+          path: `Catalog/02 Cleaned Catalog/${result.cleanedFileName}`,
+          content: result.cleanedBase64
+        },
+        {
+          kind: "text",
+          path: "Catalog/03 Supplier Email/supplier-correction-email.txt",
+          content: supplierEmail
+        }
+      ]
+    });
   }
 
   return (
@@ -304,17 +319,36 @@ export function CatalogUploader() {
                 <CardDescription>Every issue by row, field, current value, severity, and recommended fix.</CardDescription>
               </div>
               <div className="flex flex-wrap gap-2">
+                <Button onClick={downloadCatalogPackage}>
+                  <Download className="h-4 w-4" aria-hidden="true" />
+                  Supplier Package
+                </Button>
                 <Button variant="outline" onClick={() => downloadBase64Xlsx(result.reportBase64, result.reportFileName)}>
                   <Download className="h-4 w-4" aria-hidden="true" />
                   Validation Report
                 </Button>
-                <Button onClick={() => downloadBase64Xlsx(result.cleanedBase64, result.cleanedFileName)}>
+                <Button variant="outline" onClick={() => downloadBase64Xlsx(result.cleanedBase64, result.cleanedFileName)}>
                   <Download className="h-4 w-4" aria-hidden="true" />
                   Cleaned Catalog
                 </Button>
               </div>
             </CardHeader>
             <CardContent>
+              <div className="mb-4 max-w-md">
+                <label className="text-sm font-semibold text-slate-700" htmlFor="catalog-supplier-name">
+                  Supplier folder name
+                </label>
+                <Input
+                  id="catalog-supplier-name"
+                  className="mt-2"
+                  value={supplierName}
+                  onChange={(event) => setSupplierName(event.target.value)}
+                  placeholder="Supplier name"
+                />
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  The Supplier Package ZIP uses this name as the top-level folder so files stay organized after download.
+                </p>
+              </div>
               <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_160px_220px]">
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />

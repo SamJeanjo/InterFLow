@@ -4,6 +4,8 @@ import { ChangeEvent, DragEvent, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Clipboard, Download, FileSpreadsheet, Mail, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { downloadBase64Xlsx, downloadSupplierZip, sanitizeFolderName } from "@/lib/download-packages";
 import { cn } from "@/lib/utils";
 
 type Status = "idle" | "formatting" | "done" | "error";
@@ -22,19 +24,6 @@ type CustomerListResponse = {
   emailBody: string;
 };
 
-function downloadBase64Xlsx(base64: string, fileName: string) {
-  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 export function CustomerListUploader() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status>("idle");
@@ -42,6 +31,7 @@ export function CustomerListUploader() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<CustomerListResponse | null>(null);
   const [emailCopied, setEmailCopied] = useState(false);
+  const [supplierName, setSupplierName] = useState("");
 
   async function formatFile(file: File) {
     setError("");
@@ -56,6 +46,7 @@ export function CustomerListUploader() {
 
     setStatus("formatting");
     setFileName(file.name);
+    setSupplierName(sanitizeFolderName(file.name));
 
     const body = new FormData();
     body.append("file", file);
@@ -93,6 +84,26 @@ export function CustomerListUploader() {
     await navigator.clipboard.writeText(`Subject: ${result.emailSubject}\n\n${result.emailBody}`);
     setEmailCopied(true);
     window.setTimeout(() => setEmailCopied(false), 2200);
+  }
+
+  async function downloadCustomerPackage() {
+    if (!result) return;
+    await downloadSupplierZip({
+      supplierName: supplierName || result.fileName,
+      packageLabel: "customer-list",
+      files: [
+        {
+          kind: "base64",
+          path: `Customer List/01 Supplier Review Workbook/${result.formattedFileName}`,
+          content: result.formattedBase64
+        },
+        {
+          kind: "text",
+          path: "Customer List/02 Supplier Email/customer-list-review-email.txt",
+          content: `Subject: ${result.emailSubject}\n\n${result.emailBody}`
+        }
+      ]
+    });
   }
 
   return (
@@ -159,20 +170,39 @@ export function CustomerListUploader() {
             <CardHeader className="gap-4 lg:flex lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <CardTitle>Supplier Package</CardTitle>
-                <CardDescription>Download the formatted workbook and copy the email text for the supplier contact.</CardDescription>
+                <CardDescription>Download one organized ZIP package or copy the email text for the supplier contact.</CardDescription>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={copyEmail}>
                   {emailCopied ? <CheckCircle2 className="h-4 w-4" aria-hidden="true" /> : <Clipboard className="h-4 w-4" aria-hidden="true" />}
                   {emailCopied ? "Copied" : "Copy Email"}
                 </Button>
-                <Button onClick={() => downloadBase64Xlsx(result.formattedBase64, result.formattedFileName)}>
+                <Button onClick={downloadCustomerPackage}>
+                  <Download className="h-4 w-4" aria-hidden="true" />
+                  Supplier Package
+                </Button>
+                <Button variant="outline" onClick={() => downloadBase64Xlsx(result.formattedBase64, result.formattedFileName)}>
                   <Download className="h-4 w-4" aria-hidden="true" />
                   Customer Workbook
                 </Button>
               </div>
             </CardHeader>
             <CardContent>
+              <div className="mb-4 max-w-md">
+                <label className="text-sm font-semibold text-slate-700" htmlFor="customer-supplier-name">
+                  Supplier folder name
+                </label>
+                <Input
+                  id="customer-supplier-name"
+                  className="mt-2"
+                  value={supplierName}
+                  onChange={(event) => setSupplierName(event.target.value)}
+                  placeholder="Supplier name"
+                />
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  The Supplier Package ZIP uses this name as the top-level folder so files stay organized after download.
+                </p>
+              </div>
               <div className="rounded-lg border bg-white">
                 <div className="flex items-center gap-2 border-b bg-slate-50 px-4 py-3 text-sm font-semibold">
                   <Mail className="h-4 w-4 text-primary" aria-hidden="true" />
