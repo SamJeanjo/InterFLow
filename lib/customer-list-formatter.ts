@@ -17,6 +17,8 @@ export type CustomerListResponse = {
 const CUSTOMER_NUMBER_HEADER = "Customer number";
 const NOTES_HEADER = "Notes";
 const CLOSED_COLUMN_HINT = "last day of svc";
+const CATALOG_HEADER_HINTS = ["item sku", "item description", "unit price", "currency"];
+const CUSTOMER_LIST_HEADER_HINTS = ["cost ctr nbr", "cost ctr nm"];
 
 type SourceColumn = {
   header: string;
@@ -73,7 +75,31 @@ function cellToText(cell: ExcelJS.Cell) {
 }
 
 function findWorksheet(workbook: ExcelJS.Workbook) {
-  return workbook.getWorksheet("Unit List") ?? workbook.worksheets[0];
+  const unitList = workbook.getWorksheet("Unit List");
+  if (unitList) return unitList;
+
+  return workbook.worksheets.find((worksheet) => {
+    const headerRowNumber = findHeaderRow(worksheet);
+    const row = worksheet.getRow(headerRowNumber);
+    const headers: string[] = [];
+    row.eachCell({ includeEmpty: false }, (cell) => headers.push(normalizeHeader(cellToText(cell))));
+    return CUSTOMER_LIST_HEADER_HINTS.some((hint) => headers.includes(hint));
+  });
+}
+
+function workbookLooksLikeCatalog(workbook: ExcelJS.Workbook) {
+  return workbook.worksheets.some((worksheet) => {
+    for (let rowNumber = 1; rowNumber <= Math.min(20, worksheet.rowCount); rowNumber += 1) {
+      const row = worksheet.getRow(rowNumber);
+      const headers: string[] = [];
+      row.eachCell({ includeEmpty: false }, (cell) => headers.push(normalizeHeader(cellToText(cell))));
+      if (CATALOG_HEADER_HINTS.filter((hint) => headers.includes(hint)).length >= 3) {
+        return true;
+      }
+    }
+
+    return false;
+  });
 }
 
 function findHeaderRow(worksheet: ExcelJS.Worksheet) {
@@ -132,9 +158,13 @@ export async function formatCustomerListWorkbook(input: { fileName: string; buff
   const sourceWorkbook = new ExcelJS.Workbook();
   await sourceWorkbook.xlsx.load(input.buffer);
 
+  if (workbookLooksLikeCatalog(sourceWorkbook)) {
+    throw new Error("This looks like a catalog file. Please use the Catalog Validator section for catalog review files.");
+  }
+
   const sourceWorksheet = findWorksheet(sourceWorkbook);
   if (!sourceWorksheet) {
-    throw new Error("The workbook does not contain any worksheets.");
+    throw new Error("This does not look like an AP customer list. Upload a workbook with a Unit List sheet or Cost Ctr columns.");
   }
 
   const headerRowNumber = findHeaderRow(sourceWorksheet);
@@ -149,6 +179,14 @@ export async function formatCustomerListWorkbook(input: { fileName: string; buff
   sourceHeaders.forEach((header, index) => {
     sourceColumnByHeader.set(normalizeHeader(header), index + 1);
   });
+
+  const normalizedHeaders = sourceHeaders.map(normalizeHeader);
+  const looksLikeCustomerList = CUSTOMER_LIST_HEADER_HINTS.some((hint) => normalizedHeaders.includes(hint));
+
+  if (!looksLikeCustomerList) {
+    throw new Error("This does not look like an AP customer list. Expected Cost Ctr columns on the Unit List sheet.");
+  }
+
   const outputColumns = buildColumns(sourceHeaders, sourceColumnByHeader);
   const outputHeaders = outputColumns.map((column) => column.header);
 
@@ -227,7 +265,7 @@ export async function formatCustomerListWorkbook(input: { fileName: string; buff
   instructionsSheet.getColumn(2).width = 96;
 
   const safeName = input.fileName.replace(/\.xlsx$/i, "");
-  const formattedFileName = `${safeName}-customer-review.xlsx`;
+  const formattedFileName = `${safeName}-customer-list-review.xlsx`;
   const email = buildSupplierEmail();
 
   return {
