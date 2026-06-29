@@ -32,6 +32,11 @@ type RowContext = {
   supplierCurrency: SupplierCurrency;
 };
 
+type CatalogReviewRow = {
+  rowNumber: number;
+  values: Record<CatalogField, string>;
+};
+
 function cellToText(cell: ExcelJS.Cell) {
   if (cell.type === ExcelJS.ValueType.Date && cell.value instanceof Date) {
     return `${cell.value.getMonth() + 1}/${cell.value.getDate()}/${cell.value.getFullYear()}`;
@@ -232,7 +237,38 @@ function summarize(totalRows: number, issues: CatalogIssue[]): ValidationSummary
   };
 }
 
-async function buildReportWorkbook(fileName: string, summary: ValidationSummary, issues: CatalogIssue[]) {
+function styleHeaderRow(row: ExcelJS.Row) {
+  row.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  row.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FF1F2937" }
+  };
+  row.alignment = { vertical: "middle", wrapText: true };
+}
+
+function applyIssueStyle(cell: ExcelJS.Cell, issues: CatalogIssue[]) {
+  const hasError = issues.some((issue) => issue.severity === "error");
+  const fillColor = hasError ? "FFFEE2E2" : "FFFEF3C7";
+  const borderColor = hasError ? "FFDC2626" : "FFD97706";
+
+  cell.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: fillColor }
+  };
+  cell.border = {
+    top: { style: "thin", color: { argb: borderColor } },
+    left: { style: "thin", color: { argb: borderColor } },
+    bottom: { style: "thin", color: { argb: borderColor } },
+    right: { style: "thin", color: { argb: borderColor } }
+  };
+  cell.note = issues
+    .map((issue) => `${issue.severity.toUpperCase()}: ${issue.issue}\nSuggested fix: ${issue.suggestedFix}`)
+    .join("\n\n");
+}
+
+async function buildReportWorkbook(fileName: string, summary: ValidationSummary, issues: CatalogIssue[], catalogRows: CatalogReviewRow[]) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Catalog Validator";
 
@@ -249,6 +285,11 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
   summarySheet.getColumn(1).width = 24;
   summarySheet.getColumn(2).width = 36;
   summarySheet.getCell("A1").font = { bold: true, size: 16 };
+  summarySheet.addRow([]);
+  summarySheet.addRow(["Report Tabs"]);
+  summarySheet.addRow(["Issues", "Complete issue list by row, field, current value, severity, issue, and suggested fix."]);
+  summarySheet.addRow(["Catalog Review", "Catalog rows with issue cells highlighted red for errors and amber for warnings."]);
+  summarySheet.getCell("A9").font = { bold: true };
 
   const issueSheet = workbook.addWorksheet("Issues");
   issueSheet.columns = [
@@ -260,8 +301,63 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
     { header: "Suggested Fix", key: "suggestedFix", width: 46 }
   ];
   issueSheet.addRows(issues);
-  issueSheet.getRow(1).font = { bold: true };
+  styleHeaderRow(issueSheet.getRow(1));
   issueSheet.views = [{ state: "frozen", ySplit: 1 }];
+  issueSheet.autoFilter = {
+    from: "A1",
+    to: "F1"
+  };
+  issueSheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const severity = String(row.getCell("severity").value ?? "").toLowerCase();
+    if (severity === "error") {
+      row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } };
+      row.getCell("severity").font = { bold: true, color: { argb: "FF991B1B" } };
+    }
+    if (severity === "warning") {
+      row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
+      row.getCell("severity").font = { bold: true, color: { argb: "FF92400E" } };
+    }
+  });
+
+  const reviewSheet = workbook.addWorksheet("Catalog Review");
+  reviewSheet.columns = [
+    { header: "Excel Row", key: "rowNumber", width: 12 },
+    ...expectedColumns.map((field) => ({ header: field, key: field, width: Math.max(16, Math.min(34, field.length + 4)) }))
+  ];
+  styleHeaderRow(reviewSheet.getRow(1));
+  reviewSheet.views = [{ state: "frozen", ySplit: 1, xSplit: 1 }];
+  reviewSheet.autoFilter = {
+    from: "A1",
+    to: `${reviewSheet.getColumn(expectedColumns.length + 1).letter}1`
+  };
+
+  const issuesByCell = new Map<string, CatalogIssue[]>();
+  for (const issue of issues) {
+    if (issue.field === "Workbook") continue;
+    const key = `${issue.rowNumber}::${issue.field}`;
+    const existing = issuesByCell.get(key) ?? [];
+    existing.push(issue);
+    issuesByCell.set(key, existing);
+  }
+
+  for (const catalogRow of catalogRows) {
+    const row = reviewSheet.addRow({
+      rowNumber: catalogRow.rowNumber,
+      ...catalogRow.values
+    });
+    row.getCell(1).font = { bold: true };
+
+    expectedColumns.forEach((field, index) => {
+      const cellIssues = issuesByCell.get(`${catalogRow.rowNumber}::${field}`);
+      if (!cellIssues?.length) return;
+      applyIssueStyle(row.getCell(index + 2), cellIssues);
+    });
+  }
+
+  if (catalogRows.length === 0) {
+    reviewSheet.addRow(["No catalog data rows were detected."]);
+  }
 
   return Buffer.from(await workbook.xlsx.writeBuffer()).toString("base64");
 }
@@ -287,7 +383,7 @@ export async function validateCatalogWorkbook(input: {
   if (!header) {
     const reportIssue = makeIssue(0, "Workbook", "", "error", "Could not detect a valid Collaboration Portal header row.", "Use the expected Collaboration Portal catalog template.");
     const summary = summarize(0, [reportIssue]);
-    const reportBase64 = await buildReportWorkbook(input.fileName, summary, [reportIssue]);
+    const reportBase64 = await buildReportWorkbook(input.fileName, summary, [reportIssue], []);
     return {
       fileName: input.fileName,
       summary,
@@ -306,6 +402,7 @@ export async function validateCatalogWorkbook(input: {
   );
 
   let totalRows = 0;
+  const catalogRows: CatalogReviewRow[] = [];
   for (let rowNumber = header.rowNumber + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
     const row = worksheet.getRow(rowNumber);
     const hasAnyValue = expectedColumns.some((field) => {
@@ -325,6 +422,7 @@ export async function validateCatalogWorkbook(input: {
       values[field] = raw;
       cleaned[field] = field === "Item Description" || field === "Long Description" ? cleanRestrictedText(raw) : cleanText(raw);
     }
+    catalogRows.push({ rowNumber, values: { ...values } });
 
     const ctx: RowContext = {
       rowNumber,
@@ -344,7 +442,7 @@ export async function validateCatalogWorkbook(input: {
   }
 
   const summary = summarize(totalRows, allIssues);
-  const reportBase64 = await buildReportWorkbook(input.fileName, summary, allIssues);
+  const reportBase64 = await buildReportWorkbook(input.fileName, summary, allIssues, catalogRows);
   const cleanedBase64 = await workbookToBase64(workbook);
   const safeName = input.fileName.replace(/\.xlsx$/i, "");
 
