@@ -34,7 +34,13 @@ type RowContext = {
 
 type CatalogReviewRow = {
   rowNumber: number;
-  values: Record<CatalogField, string>;
+  cells: Record<
+    CatalogField,
+    {
+      value: ExcelJS.CellValue;
+      numFmt?: string;
+    }
+  >;
 };
 
 function cellToText(cell: ExcelJS.Cell) {
@@ -47,6 +53,18 @@ function cellToText(cell: ExcelJS.Cell) {
   }
 
   return cell.text?.trim() ?? "";
+}
+
+function cloneCellValue(cell: ExcelJS.Cell): ExcelJS.CellValue {
+  if (cell.value instanceof Date) {
+    return new Date(cell.value.getTime());
+  }
+
+  if (typeof cell.value === "object" && cell.value !== null) {
+    return JSON.parse(JSON.stringify(cell.value)) as ExcelJS.CellValue;
+  }
+
+  return cell.value;
 }
 
 function findHeaderRow(worksheet: ExcelJS.Worksheet): HeaderMatch | null {
@@ -342,16 +360,22 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
   }
 
   for (const catalogRow of catalogRows) {
-    const row = reviewSheet.addRow({
-      rowNumber: catalogRow.rowNumber,
-      ...catalogRow.values
-    });
+    const row = reviewSheet.addRow([catalogRow.rowNumber]);
     row.getCell(1).font = { bold: true };
 
     expectedColumns.forEach((field, index) => {
+      const cell = row.getCell(index + 2);
+      const sourceCell = catalogRow.cells[field];
+      cell.value = sourceCell.value;
+      if (sourceCell.numFmt) {
+        cell.numFmt = sourceCell.numFmt;
+      } else if (field === "Unit Price" && typeof sourceCell.value === "number") {
+        cell.numFmt = "0.00";
+      }
+
       const cellIssues = issuesByCell.get(`${catalogRow.rowNumber}::${field}`);
       if (!cellIssues?.length) return;
-      applyIssueStyle(row.getCell(index + 2), cellIssues);
+      applyIssueStyle(cell, cellIssues);
     });
   }
 
@@ -415,14 +439,20 @@ export async function validateCatalogWorkbook(input: {
 
     const values = {} as Record<CatalogField, string>;
     const cleaned = {} as Record<CatalogField, string>;
+    const reviewCells = {} as CatalogReviewRow["cells"];
 
     for (const field of expectedColumns) {
       const columnNumber = header.mapping.get(field);
-      const raw = columnNumber ? cellToText(row.getCell(columnNumber)) : "";
+      const sourceCell = columnNumber ? row.getCell(columnNumber) : undefined;
+      const raw = sourceCell ? cellToText(sourceCell) : "";
       values[field] = raw;
       cleaned[field] = field === "Item Description" || field === "Long Description" ? cleanRestrictedText(raw) : cleanText(raw);
+      reviewCells[field] = {
+        value: sourceCell ? cloneCellValue(sourceCell) : null,
+        numFmt: sourceCell?.numFmt
+      };
     }
-    catalogRows.push({ rowNumber, values: { ...values } });
+    catalogRows.push({ rowNumber, cells: reviewCells });
 
     const ctx: RowContext = {
       rowNumber,
@@ -436,7 +466,9 @@ export async function validateCatalogWorkbook(input: {
     for (const field of expectedColumns) {
       const columnNumber = header.mapping.get(field);
       if (!columnNumber) continue;
-      row.getCell(columnNumber).value = cleaned[field] === "" ? null : cleaned[field];
+      if (cleaned[field] !== values[field]) {
+        row.getCell(columnNumber).value = cleaned[field] === "" ? null : cleaned[field];
+      }
     }
     row.commit();
   }
