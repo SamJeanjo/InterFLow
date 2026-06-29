@@ -1,7 +1,17 @@
 "use client";
 
 import { ChangeEvent, DragEvent, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, Search, UploadCloud, Wand2 } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clipboard,
+  Download,
+  FileSpreadsheet,
+  Mail,
+  Search,
+  UploadCloud,
+  Wand2
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +21,7 @@ import { cn } from "@/lib/utils";
 
 type Status = "idle" | "validating" | "done" | "error";
 type SupplierCurrency = "USD" | "CAD";
+const INLINE_EMAIL_ISSUE_LIMIT = 20;
 
 function downloadBase64Xlsx(base64: string, fileName: string) {
   const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
@@ -25,6 +36,58 @@ function downloadBase64Xlsx(base64: string, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
+function buildSupplierEmail(result: ValidationResponse) {
+  const errorCount = result.issues.filter((issue) => issue.severity === "error").length;
+  const warningCount = result.issues.filter((issue) => issue.severity === "warning").length;
+  const hasAttachment = result.issues.length > INLINE_EMAIL_ISSUE_LIMIT;
+  const visibleIssues = hasAttachment ? [] : result.issues;
+
+  const issueLines = visibleIssues.map((issue, index) => {
+    const row = issue.rowNumber || "Workbook";
+    return [
+      `${index + 1}. Row: ${row}`,
+      `   Column / Field: ${issue.field}`,
+      `   Severity: ${issue.severity.toUpperCase()}`,
+      `   Current value: ${issue.currentValue || "(blank)"}`,
+      `   Issue: ${issue.issue}`,
+      `   Recommended fix: ${issue.suggestedFix}`
+    ].join("\n");
+  });
+
+  return [
+    "Subject: Supplier catalog corrections required",
+    "",
+    "Hello,",
+    "",
+    `Thank you for submitting your catalog file: ${result.fileName}.`,
+    "",
+    "We completed a validation review and found items that need to be corrected before the catalog can be submitted.",
+    "",
+    "Validation summary:",
+    `- Total rows reviewed: ${result.summary.totalRows}`,
+    `- Rows with errors: ${result.summary.rowsWithErrors}`,
+    `- Rows with warnings: ${result.summary.rowsWithWarnings}`,
+    `- Total issues found: ${result.summary.totalIssues}`,
+    `- Error count: ${errorCount}`,
+    `- Warning count: ${warningCount}`,
+    "",
+    hasAttachment
+      ? [
+          `Because there are more than ${INLINE_EMAIL_ISSUE_LIMIT} issues, please review the attached Excel validation report.`,
+          "The report lists each item by row number, column / field, current value, severity, issue, and recommended fix."
+        ].join("\n")
+      : [
+          "Please correct the issues listed below:",
+          "",
+          issueLines.join("\n\n") || "No row-level issues were found."
+        ].join("\n"),
+    "",
+    "Please update the catalog and resend the corrected file. Focus first on rows marked ERROR, because those must be corrected before submission.",
+    "",
+    "Thank you."
+  ].join("\n");
+}
+
 export function CatalogUploader() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status>("idle");
@@ -36,6 +99,7 @@ export function CatalogUploader() {
   const [severity, setSeverity] = useState<"all" | "error" | "warning">("all");
   const [field, setField] = useState("all");
   const [query, setQuery] = useState("");
+  const [emailCopied, setEmailCopied] = useState(false);
 
   async function validateFile(file: File) {
     setError("");
@@ -49,6 +113,7 @@ export function CatalogUploader() {
 
     setStatus("validating");
     setFileName(file.name);
+    setEmailCopied(false);
 
     const body = new FormData();
     body.append("file", file);
@@ -99,6 +164,15 @@ export function CatalogUploader() {
     const fields = new Set(result?.issues.map((issue) => issue.field) ?? []);
     return [...fields].sort();
   }, [result?.issues]);
+
+  const supplierEmail = useMemo(() => (result ? buildSupplierEmail(result) : ""), [result]);
+
+  async function copySupplierEmail() {
+    if (!supplierEmail) return;
+    await navigator.clipboard.writeText(supplierEmail);
+    setEmailCopied(true);
+    window.setTimeout(() => setEmailCopied(false), 2200);
+  }
 
   return (
     <div className="space-y-6">
@@ -300,6 +374,55 @@ export function CatalogUploader() {
                   </div>
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="gap-4 lg:flex lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle>Supplier Email</CardTitle>
+                <CardDescription>
+                  Premium supplier-ready message with clear row and column guidance. If there are more than {INLINE_EMAIL_ISSUE_LIMIT} issues, attach the
+                  Excel validation report.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={copySupplierEmail}>
+                  {emailCopied ? <CheckCircle2 className="h-4 w-4" aria-hidden="true" /> : <Clipboard className="h-4 w-4" aria-hidden="true" />}
+                  {emailCopied ? "Copied" : "Copy Email"}
+                </Button>
+                {result.summary.totalIssues > INLINE_EMAIL_ISSUE_LIMIT ? (
+                  <Button onClick={() => downloadBase64Xlsx(result.reportBase64, result.reportFileName)}>
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    Attachment
+                  </Button>
+                ) : null}
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="mb-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-md border bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Email mode</p>
+                  <p className="mt-1 text-sm font-semibold">
+                    {result.summary.totalIssues > INLINE_EMAIL_ISSUE_LIMIT ? "Attach Excel report" : "Inline issue list"}
+                  </p>
+                </div>
+                <div className="rounded-md border bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Inline threshold</p>
+                  <p className="mt-1 text-sm font-semibold">{INLINE_EMAIL_ISSUE_LIMIT} issues or fewer</p>
+                </div>
+                <div className="rounded-md border bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Attachment file</p>
+                  <p className="mt-1 break-words text-sm font-semibold">{result.reportFileName}</p>
+                </div>
+              </div>
+              <div className="rounded-lg border bg-white">
+                <div className="flex items-center gap-2 border-b bg-slate-50 px-4 py-3 text-sm font-semibold">
+                  <Mail className="h-4 w-4 text-primary" aria-hidden="true" />
+                  Supplier correction request
+                </div>
+                <pre className="max-h-[460px] overflow-auto whitespace-pre-wrap p-4 text-sm leading-6 text-slate-800">{supplierEmail}</pre>
+              </div>
             </CardContent>
           </Card>
         </section>
