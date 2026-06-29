@@ -18,8 +18,46 @@ const CUSTOMER_NUMBER_HEADER = "Customer number";
 const NOTES_HEADER = "Notes";
 const CLOSED_COLUMN_HINT = "last day of svc";
 
+type SourceColumn = {
+  header: string;
+  sourceCol?: number;
+  kind?: "customerNumber" | "notes";
+};
+
 function normalizeHeader(value: string) {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function cloneStyle<T>(value: T | undefined): T | undefined {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function cloneCellValue(cell: ExcelJS.Cell): ExcelJS.CellValue {
+  if (cell.value instanceof Date) {
+    return new Date(cell.value.getTime());
+  }
+
+  if (typeof cell.value === "object" && cell.value !== null) {
+    return JSON.parse(JSON.stringify(cell.value)) as ExcelJS.CellValue;
+  }
+
+  return cell.value;
+}
+
+function copyCellFormat(sourceCell: ExcelJS.Cell, targetCell: ExcelJS.Cell) {
+  targetCell.style = cloneStyle(sourceCell.style) ?? {};
+  if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
+  const alignment = cloneStyle(sourceCell.alignment);
+  const border = cloneStyle(sourceCell.border);
+  const fill = cloneStyle(sourceCell.fill);
+  const font = cloneStyle(sourceCell.font);
+  const protection = cloneStyle(sourceCell.protection);
+  if (alignment) targetCell.alignment = alignment;
+  if (border) targetCell.border = border;
+  if (fill) targetCell.fill = fill;
+  if (font) targetCell.font = font;
+  if (protection) targetCell.protection = protection;
 }
 
 function cellToText(cell: ExcelJS.Cell) {
@@ -52,55 +90,37 @@ function findHeaderRow(worksheet: ExcelJS.Worksheet) {
   return 1;
 }
 
-function buildColumns(headers: string[]) {
-  const filtered = headers.filter((header) => {
-    const normalized = normalizeHeader(header);
-    return normalized !== normalizeHeader(CUSTOMER_NUMBER_HEADER) && normalized !== normalizeHeader(NOTES_HEADER);
-  });
+function buildColumns(headers: string[], sourceColumnByHeader: Map<string, number>): SourceColumn[] {
+  const filtered = headers
+    .map((header) => ({ header, sourceCol: sourceColumnByHeader.get(normalizeHeader(header)) }))
+    .filter((column) => {
+      const normalized = normalizeHeader(column.header);
+      return normalized !== normalizeHeader(CUSTOMER_NUMBER_HEADER) && normalized !== normalizeHeader(NOTES_HEADER);
+    });
 
-  return [filtered[0] || "Cost Ctr Nbr", CUSTOMER_NUMBER_HEADER, ...filtered.slice(1), NOTES_HEADER];
+  return [
+    filtered[0] ?? { header: "Cost Ctr Nbr" },
+    { header: CUSTOMER_NUMBER_HEADER, sourceCol: sourceColumnByHeader.get(normalizeHeader(CUSTOMER_NUMBER_HEADER)), kind: "customerNumber" },
+    ...filtered.slice(1),
+    { header: NOTES_HEADER, sourceCol: sourceColumnByHeader.get(normalizeHeader(NOTES_HEADER)), kind: "notes" }
+  ];
 }
 
-function styleHeader(row: ExcelJS.Row) {
-  row.font = { bold: true, color: { argb: "FFFFFFFF" } };
-  row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2937" } };
-  row.alignment = { vertical: "middle", wrapText: true };
-}
-
-function styleInputCell(cell: ExcelJS.Cell) {
-  cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF7CC" } };
-  cell.border = {
-    top: { style: "thin", color: { argb: "FFEAB308" } },
-    left: { style: "thin", color: { argb: "FFEAB308" } },
-    bottom: { style: "thin", color: { argb: "FFEAB308" } },
-    right: { style: "thin", color: { argb: "FFEAB308" } }
-  };
-}
-
-function buildSupplierEmail(input: {
-  fileName: string;
-  totalRows: number;
-  possibleClosedRows: number;
-  formattedFileName: string;
-}) {
+function buildSupplierEmail() {
   const subject = "Customer list review requested";
   const body = [
-    "Hello,",
+    "Hi,",
     "",
-    `Please review the attached customer list prepared from ${input.fileName}.`,
+    "Please review the attached customer list.",
     "",
-    "We added two supplier review columns:",
-    "- Customer number: please enter your customer/account number for each active location.",
-    "- Notes: please mark any closed/inactive locations and include any comments needed for setup or cleanup.",
+    "I added two supplier review columns:",
+    "",
+    "Customer number: Please enter your customer/account number for each active location.",
+    "Notes: Please mark any closed or inactive locations and include any comments needed for setup or cleanup.",
     "",
     "Please also add any missing or new customers/locations that should be included for ordering.",
     "",
-    "Review summary:",
-    `- Customer rows included: ${input.totalRows}`,
-    `- Rows with a last day of service date: ${input.possibleClosedRows}`,
-    `- File to return: ${input.formattedFileName}`,
-    "",
-    "Please return the completed workbook when finished. If a row is no longer active, leave the row in the file and note that it is closed in the Notes column.",
+    "Once completed, please return the workbook. If a row is no longer active, please leave it in the file and note that it is closed in the Notes column.",
     "",
     "Thank you."
   ].join("\n");
@@ -125,18 +145,24 @@ export async function formatCustomerListWorkbook(input: { fileName: string; buff
     if (header) sourceHeaders.push(header);
   }
 
-  const outputHeaders = buildColumns(sourceHeaders);
   const sourceColumnByHeader = new Map<string, number>();
   sourceHeaders.forEach((header, index) => {
     sourceColumnByHeader.set(normalizeHeader(header), index + 1);
   });
+  const outputColumns = buildColumns(sourceHeaders, sourceColumnByHeader);
+  const outputHeaders = outputColumns.map((column) => column.header);
 
   const outputWorkbook = new ExcelJS.Workbook();
   outputWorkbook.creator = "Catalog Validator";
 
   const listSheet = outputWorkbook.addWorksheet("Customer List");
-  listSheet.addRow(outputHeaders);
-  styleHeader(listSheet.getRow(1));
+  const headerRow = listSheet.addRow(outputHeaders);
+  headerRow.height = sourceHeaderRow.height;
+  outputColumns.forEach((column, index) => {
+    const targetCell = headerRow.getCell(index + 1);
+    const templateSourceCol = column.sourceCol ?? (column.kind === "customerNumber" ? 1 : sourceWorksheet.columnCount);
+    copyCellFormat(sourceHeaderRow.getCell(templateSourceCol), targetCell);
+  });
   listSheet.views = [{ state: "frozen", ySplit: 1, xSplit: 2 }];
   listSheet.autoFilter = {
     from: "A1",
@@ -155,37 +181,38 @@ export async function formatCustomerListWorkbook(input: { fileName: string; buff
     });
     if (!hasAnyValue) continue;
 
-    const outputValues = outputHeaders.map((header) => {
-      const normalized = normalizeHeader(header);
-      if (normalized === normalizeHeader(CUSTOMER_NUMBER_HEADER) || normalized === normalizeHeader(NOTES_HEADER)) {
-        const sourceCol = sourceColumnByHeader.get(normalized);
-        return sourceCol ? sourceRow.getCell(sourceCol).value ?? "" : "";
-      }
-      const sourceCol = sourceColumnByHeader.get(normalized);
-      return sourceCol ? sourceRow.getCell(sourceCol).value ?? "" : "";
-    });
-
-    const outputRow = listSheet.addRow(outputValues);
+    const outputRow = listSheet.addRow([]);
+    outputRow.height = sourceRow.height;
     totalRows += 1;
 
-    styleInputCell(outputRow.getCell(2));
-    styleInputCell(outputRow.getCell(outputHeaders.length));
-    outputRow.getCell(2).note = "Supplier: enter your customer/account number for this location.";
-    outputRow.getCell(outputHeaders.length).note = "Supplier: mark closed/inactive locations here and add any missing setup notes.";
+    outputColumns.forEach((column, index) => {
+      const targetCell = outputRow.getCell(index + 1);
+      const templateSourceCol = column.sourceCol ?? (column.kind === "customerNumber" ? 1 : sourceWorksheet.columnCount);
+      const templateCell = sourceRow.getCell(templateSourceCol);
+      copyCellFormat(templateCell, targetCell);
+
+      if (column.sourceCol) {
+        targetCell.value = cloneCellValue(sourceRow.getCell(column.sourceCol));
+      } else {
+        targetCell.value = "";
+      }
+    });
 
     if (closedColumnIndex > 0 && cellToText(outputRow.getCell(closedColumnIndex))) {
       possibleClosedRows += 1;
-      outputRow.getCell(closedColumnIndex).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } };
-      outputRow.getCell(outputHeaders.length).note = "This row has a last day of service date. Please confirm if closed/inactive in Notes.";
     }
   }
 
-  listSheet.columns.forEach((column) => {
-    const header = String(column.header ?? "");
-    column.width = Math.max(14, Math.min(34, header.length + 6));
+  outputColumns.forEach((column, index) => {
+    const targetColumn = listSheet.getColumn(index + 1);
+    if (column.sourceCol) {
+      targetColumn.width = sourceWorksheet.getColumn(column.sourceCol).width;
+    } else if (column.kind === "customerNumber") {
+      targetColumn.width = Math.max(18, sourceWorksheet.getColumn(1).width ?? 18);
+    } else {
+      targetColumn.width = Math.max(28, sourceWorksheet.getColumn(sourceWorksheet.columnCount).width ?? 28);
+    }
   });
-  listSheet.getColumn(2).width = 22;
-  listSheet.getColumn(outputHeaders.length).width = 36;
 
   const instructionsSheet = outputWorkbook.addWorksheet("Instructions");
   instructionsSheet.addRows([
@@ -201,12 +228,7 @@ export async function formatCustomerListWorkbook(input: { fileName: string; buff
 
   const safeName = input.fileName.replace(/\.xlsx$/i, "");
   const formattedFileName = `${safeName}-customer-review.xlsx`;
-  const email = buildSupplierEmail({
-    fileName: input.fileName,
-    totalRows,
-    possibleClosedRows,
-    formattedFileName
-  });
+  const email = buildSupplierEmail();
 
   return {
     fileName: input.fileName,
