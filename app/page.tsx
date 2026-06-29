@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, FileCheck2, ShieldCheck } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileCheck2, ShieldCheck, UsersRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -18,12 +18,20 @@ export default function HomePage() {
               Upload your supplier catalog and validate it before submission. The app flags every row-level issue and creates downloadable report and cleaned catalog workbooks.
             </p>
           </div>
-          <Button asChild size="lg">
-            <Link href="/validate">
-              Upload Catalog
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            </Link>
-          </Button>
+          <div className="flex flex-wrap gap-3">
+            <Button asChild size="lg">
+              <Link href="/validate">
+                Upload Catalog
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Button>
+            <Button asChild size="lg" variant="outline">
+              <Link href="/customers">
+                Customer List
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Button>
+          </div>
         </div>
       </section>
 
@@ -63,6 +71,26 @@ export default function HomePage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card>
+          <CardContent className="grid gap-4 p-5 lg:grid-cols-[48px_minmax(0,1fr)_auto] lg:items-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <UsersRound className="h-6 w-6" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 className="font-semibold">Customer List Formatter</h2>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                Upload AP customer lists, add supplier review columns, download a formatted workbook, and copy the supplier email.
+              </p>
+            </div>
+            <Button asChild variant="outline">
+              <Link href="/customers">
+                Open
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
       </section>
     </main>
   );
