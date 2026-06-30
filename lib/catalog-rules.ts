@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { approvedUnuomCodes, approvedUnuomCodeSet } from "@/lib/unuom-codes";
 
 export const expectedColumns = [
   "Action",
@@ -69,7 +70,8 @@ export const uploadOptionsSchema = z.object({
   supplierCurrency: z.enum(["USD", "CAD"]).default("USD")
 });
 
-export const approvedUoms = ["EA", "CS", "LB", "KG", "OZ", "GAL", "QT", "PT", "BX", "PK"];
+export const approvedUoms = approvedUnuomCodes;
+export const approvedUomSet = approvedUnuomCodeSet;
 export const allowedLeadTimes = ["0", "1", "2", "3", "5"];
 export const forbiddenTextPattern = /[;,"*~>|]/;
 

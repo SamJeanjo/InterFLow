@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import {
-  approvedUoms,
+  approvedUomSet,
   CatalogField,
   CatalogIssue,
   cleanRestrictedText,
@@ -125,8 +125,15 @@ function validateRow(ctx: RowContext) {
 
   if (isBlank(value("UOM"))) {
     addIssue(issues, ctx, "UOM", "error", "UOM is required.", "Enter a valid unit of measure.");
-  } else if (!approvedUoms.includes(value("UOM").toUpperCase())) {
-    addIssue(issues, ctx, "UOM", "warning", "UOM is not in the approved MVP list.", `Use one of: ${approvedUoms.join(", ")}.`);
+  } else if (!approvedUomSet.has(value("UOM").toUpperCase())) {
+    addIssue(
+      issues,
+      ctx,
+      "UOM",
+      "warning",
+      "UOM is not in the approved UNUOM code list.",
+      "Use a valid UNUOM Revision 9 unit of measure code."
+    );
   }
 
   if (!isBlank(value("Items Per Case")) && !isNumeric(value("Items Per Case"))) {
