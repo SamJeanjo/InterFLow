@@ -34,7 +34,7 @@ export const expectedColumns = [
 ] as const;
 
 export type CatalogField = (typeof expectedColumns)[number];
-export type Severity = "error" | "warning";
+export type Severity = "error" | "warning" | "suggestion";
 export type SupplierCurrency = "USD" | "CAD";
 
 export type CatalogIssue = {
@@ -42,6 +42,7 @@ export type CatalogIssue = {
   field: CatalogField | "Workbook";
   currentValue: string;
   severity: Severity;
+  group?: string;
   issue: string;
   suggestedFix: string;
 };
@@ -49,6 +50,7 @@ export type CatalogIssue = {
 export type ValidationSummary = {
   totalRows: number;
   passedRows: number;
+  rowsWithSuggestions: number;
   rowsWithWarnings: number;
   rowsWithErrors: number;
   totalIssues: number;
@@ -124,13 +126,15 @@ export function makeIssue(
   currentValue: string,
   severity: Severity,
   issue: string,
-  suggestedFix: string
+  suggestedFix: string,
+  group?: string
 ): CatalogIssue {
   return {
     rowNumber,
     field,
     currentValue,
     severity,
+    group,
     issue,
     suggestedFix
   };

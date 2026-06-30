@@ -13,11 +13,15 @@ import {
   isValidDateValue,
   makeIssue,
   normalizeHeader,
+  Severity,
   SupplierCurrency,
   ValidationResponse,
   ValidationSummary
 } from "@/lib/catalog-rules";
 import { allowedLeadTimes } from "@/lib/catalog-rules";
+
+const CATCH_WEIGHT_REVIEW_GROUP = "Catch Weight / UOM Consistency Review";
+const WEIGHT_BASED_UOMS = new Set(["LBR", "LB", "KG", "G"]);
 
 type HeaderMatch = {
   rowNumber: number;
@@ -91,11 +95,118 @@ function addIssue(
   issues: CatalogIssue[],
   ctx: RowContext,
   field: CatalogField,
-  severity: "error" | "warning",
+  severity: Severity,
   issue: string,
-  suggestedFix: string
+  suggestedFix: string,
+  group?: string
 ) {
-  issues.push(makeIssue(ctx.rowNumber, field, ctx.values[field], severity, issue, suggestedFix));
+  issues.push(makeIssue(ctx.rowNumber, field, ctx.values[field], severity, issue, suggestedFix, group));
+}
+
+function isCatchWeightTrue(value: string) {
+  return ["1", "TRUE", "YES", "Y"].includes(value.trim().toUpperCase());
+}
+
+function isCatchWeightBlankOrFalse(value: string) {
+  return isBlank(value) || ["0", "FALSE", "NO", "N"].includes(value.trim().toUpperCase());
+}
+
+function hasEachLanguage(value: string) {
+  return /\b(EACH|EA|PC|PIECE)\b/i.test(value);
+}
+
+function hasCasePackLanguage(value: string) {
+  return /\b(CASE|CS|BOX|BAG|TUB|PAIL|LOAF|FILLET|WHOLE|RANDOM|AVG|APPROX)\b/i.test(value);
+}
+
+function appearsWeightPriced(value: string) {
+  return /(?:\/|\bPER\s+)\s*(LBR|LB|LBS|POUND|POUNDS|KG|KGS|KILOGRAM|KILOGRAMS)\b/i.test(value) ||
+    /\b(LBR|LB|LBS|POUND|POUNDS|KG|KGS|KILOGRAM|KILOGRAMS)\b/i.test(value);
+}
+
+function hasFixedWeightPattern(value: string) {
+  return /\b\d+(?:\.\d+)?\s*(?:X|x|×|\/)\s*\d+(?:\.\d+)?\s*(?:OZ|OUNCE|OUNCES|LB|LBR|LBS|KG|KGS|G|GRAM|GRAMS)\b/i.test(value) ||
+    /\b\d+(?:\.\d+)?\s*(?:OZ|OUNCE|OUNCES|LB|LBR|LBS|KG|KGS|G|GRAM|GRAMS)\s*(?:CASE|CS|BOX|BAG)\b/i.test(value);
+}
+
+function applyCatchWeightUomConsistencyReview(issues: CatalogIssue[], ctx: RowContext) {
+  const value = (field: CatalogField) => ctx.values[field].trim();
+  const uom = value("UOM").toUpperCase();
+  const description = value("Item Description");
+  const packSize = value("Pack Size");
+  const catchweight = value("Catchweight");
+  const combinedProductText = `${description} ${packSize}`;
+  const isWeightBasedUom = WEIGHT_BASED_UOMS.has(uom);
+  const catchWeightTrue = isCatchWeightTrue(catchweight);
+  const catchWeightBlankOrFalse = isCatchWeightBlankOrFalse(catchweight);
+  const fixedWeightPack = hasFixedWeightPattern(combinedProductText);
+
+  if ((uom === "LBR" || uom === "LB") && hasEachLanguage(description) && catchWeightBlankOrFalse) {
+    addIssue(
+      issues,
+      ctx,
+      "UOM",
+      "warning",
+      "Possible UOM conflict. Description indicates the item may be sold by each, but UOM is set to pound. Please confirm whether this item is sold by pound or by each.",
+      "If sold by pound: keep UOM as LBR and update description if needed. If sold by each but priced by pound: review Catch Weight and Average Case Weight requirements.",
+      CATCH_WEIGHT_REVIEW_GROUP
+    );
+  }
+
+  if (
+    hasCasePackLanguage(description) &&
+    !isWeightBasedUom &&
+    !fixedWeightPack &&
+    !isBlank(value("Unit Price")) &&
+    appearsWeightPriced(combinedProductText) &&
+    catchWeightBlankOrFalse
+  ) {
+    addIssue(
+      issues,
+      ctx,
+      "Catchweight",
+      "warning",
+      "Possible Catch Weight item. This item appears to be sold as a case/pack but may be priced by weight. If the case weight can vary, set Catch Weight to True and provide Average Case Weight.",
+      "Confirm the selling logic. If the case weight can vary, set Catch Weight to 1 and provide Average Case Weight.",
+      CATCH_WEIGHT_REVIEW_GROUP
+    );
+  }
+
+  if (catchWeightTrue && isBlank(value("Avg Case Weight"))) {
+    addIssue(
+      issues,
+      ctx,
+      "Avg Case Weight",
+      "error",
+      "Catch Weight is True, but Average Case Weight is missing. Please provide the average case weight so the system can calculate the sellable unit price.",
+      "Enter the average case weight.",
+      CATCH_WEIGHT_REVIEW_GROUP
+    );
+  }
+
+  if (catchWeightTrue && isWeightBasedUom) {
+    addIssue(
+      issues,
+      ctx,
+      "Catchweight",
+      "warning",
+      "Catch Weight may not be required because the UOM is already weight-based. If the item is sold directly by pound/kg, set Catch Weight to False. If the item is sold as a case but priced by pound/kg, confirm the correct UOM and Average Case Weight.",
+      "If sold directly by pound/kg, clear Catchweight. If sold as a case but priced by pound/kg, confirm the correct UOM and Average Case Weight.",
+      CATCH_WEIGHT_REVIEW_GROUP
+    );
+  }
+
+  if (catchWeightTrue && hasFixedWeightPattern(packSize)) {
+    addIssue(
+      issues,
+      ctx,
+      "Catchweight",
+      "warning",
+      "Catch Weight is marked True, but the pack size appears fixed/premeasured. Please confirm whether the case weight actually varies.",
+      "Confirm whether the case weight varies. If fixed/premeasured, clear Catchweight.",
+      CATCH_WEIGHT_REVIEW_GROUP
+    );
+  }
 }
 
 function validateRow(ctx: RowContext) {
@@ -144,13 +255,18 @@ function validateRow(ctx: RowContext) {
     addIssue(issues, ctx, "Pack Size", "warning", "Pack Size is blank.", "Enter item size or weight when available.");
   }
 
-  if (!isBlank(value("Catchweight")) && value("Catchweight") !== "1") {
-    addIssue(issues, ctx, "Catchweight", "error", "Catchweight can only be blank or 1.", "Clear the value or enter 1 for catch weight items.");
+  if (!isCatchWeightBlankOrFalse(value("Catchweight")) && !isCatchWeightTrue(value("Catchweight"))) {
+    addIssue(
+      issues,
+      ctx,
+      "Catchweight",
+      "error",
+      "Catchweight can only be blank/False or 1/True.",
+      "Clear the value for non-catch-weight items or enter 1 for catch weight items."
+    );
   }
 
-  if (value("Catchweight") === "1" && isBlank(value("Avg Case Weight"))) {
-    addIssue(issues, ctx, "Avg Case Weight", "error", "Avg Case Weight is required when Catchweight is 1.", "Enter the average case weight.");
-  } else if (!isBlank(value("Avg Case Weight")) && !isNumeric(value("Avg Case Weight"))) {
+  if (!isBlank(value("Avg Case Weight")) && !isNumeric(value("Avg Case Weight"))) {
     addIssue(issues, ctx, "Avg Case Weight", "error", "Avg Case Weight must be numeric.", "Enter a numeric weight.");
   }
 
@@ -241,21 +357,26 @@ function validateRow(ctx: RowContext) {
     addIssue(issues, ctx, "Item Status", "warning", "Item Status should be blank.", "Clear this field.");
   }
 
+  applyCatchWeightUomConsistencyReview(issues, ctx);
+
   return issues;
 }
 
 function summarize(totalRows: number, issues: CatalogIssue[]): ValidationSummary {
   const errors = new Set<number>();
   const warnings = new Set<number>();
+  const suggestions = new Set<number>();
 
   for (const issue of issues) {
     if (issue.severity === "error") errors.add(issue.rowNumber);
     if (issue.severity === "warning") warnings.add(issue.rowNumber);
+    if (issue.severity === "suggestion") suggestions.add(issue.rowNumber);
   }
 
   return {
     totalRows,
-    passedRows: Math.max(0, totalRows - new Set([...errors, ...warnings]).size),
+    passedRows: Math.max(0, totalRows - new Set([...errors, ...warnings, ...suggestions]).size),
+    rowsWithSuggestions: suggestions.size,
     rowsWithWarnings: warnings.size,
     rowsWithErrors: errors.size,
     totalIssues: issues.length
@@ -274,8 +395,9 @@ function styleHeaderRow(row: ExcelJS.Row) {
 
 function applyIssueStyle(cell: ExcelJS.Cell, issues: CatalogIssue[]) {
   const hasError = issues.some((issue) => issue.severity === "error");
-  const fillColor = hasError ? "FFFEE2E2" : "FFFEF3C7";
-  const borderColor = hasError ? "FFDC2626" : "FFD97706";
+  const hasWarning = issues.some((issue) => issue.severity === "warning");
+  const fillColor = hasError ? "FFFEE2E2" : hasWarning ? "FFFEF3C7" : "FFEFF6FF";
+  const borderColor = hasError ? "FFDC2626" : hasWarning ? "FFD97706" : "FF2563EB";
 
   cell.fill = {
     type: "pattern",
@@ -289,7 +411,7 @@ function applyIssueStyle(cell: ExcelJS.Cell, issues: CatalogIssue[]) {
     right: { style: "thin", color: { argb: borderColor } }
   };
   cell.note = issues
-    .map((issue) => `${issue.severity.toUpperCase()}: ${issue.issue}\nSuggested fix: ${issue.suggestedFix}`)
+    .map((issue) => `${issue.severity.toUpperCase()}${issue.group ? ` - ${issue.group}` : ""}: ${issue.issue}\nSuggested fix: ${issue.suggestedFix}`)
     .join("\n\n");
 }
 
@@ -303,6 +425,7 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
     ["Source File", fileName],
     ["Total Rows", summary.totalRows],
     ["Passed Rows", summary.passedRows],
+    ["Rows With Suggestions", summary.rowsWithSuggestions],
     ["Rows With Warnings", summary.rowsWithWarnings],
     ["Rows With Errors", summary.rowsWithErrors],
     ["Total Issues", summary.totalIssues]
@@ -312,9 +435,9 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
   summarySheet.getCell("A1").font = { bold: true, size: 16 };
   summarySheet.addRow([]);
   summarySheet.addRow(["Report Tabs"]);
-  summarySheet.addRow(["Issues", "Complete issue list by row, field, current value, severity, issue, and suggested fix."]);
-  summarySheet.addRow(["Catalog Review", "Catalog rows with issue cells highlighted red for errors and amber for warnings."]);
-  summarySheet.getCell("A9").font = { bold: true };
+  summarySheet.addRow(["Issues", "Complete issue list by row, field, current value, severity, rule group, issue, and suggested fix."]);
+  summarySheet.addRow(["Catalog Review", "Catalog rows with issue cells highlighted red for errors, amber for warnings, and blue for suggestions."]);
+  summarySheet.getCell("A10").font = { bold: true };
 
   const issueSheet = workbook.addWorksheet("Issues");
   issueSheet.columns = [
@@ -322,6 +445,7 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
     { header: "Field", key: "field", width: 24 },
     { header: "Current Value", key: "currentValue", width: 30 },
     { header: "Severity", key: "severity", width: 12 },
+    { header: "Rule Group", key: "group", width: 34 },
     { header: "Issue", key: "issue", width: 46 },
     { header: "Suggested Fix", key: "suggestedFix", width: 46 }
   ];
@@ -330,7 +454,7 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
   issueSheet.views = [{ state: "frozen", ySplit: 1 }];
   issueSheet.autoFilter = {
     from: "A1",
-    to: "F1"
+    to: "G1"
   };
   issueSheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
@@ -342,6 +466,10 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
     if (severity === "warning") {
       row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
       row.getCell("severity").font = { bold: true, color: { argb: "FF92400E" } };
+    }
+    if (severity === "suggestion") {
+      row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFF6FF" } };
+      row.getCell("severity").font = { bold: true, color: { argb: "FF1D4ED8" } };
     }
   });
 

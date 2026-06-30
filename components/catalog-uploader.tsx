@@ -27,6 +27,7 @@ const INLINE_EMAIL_ISSUE_LIMIT = 20;
 function buildSupplierEmail(result: ValidationResponse) {
   const errorCount = result.issues.filter((issue) => issue.severity === "error").length;
   const warningCount = result.issues.filter((issue) => issue.severity === "warning").length;
+  const suggestionCount = result.issues.filter((issue) => issue.severity === "suggestion").length;
   const hasAttachment = result.issues.length > INLINE_EMAIL_ISSUE_LIMIT;
   const visibleIssues = hasAttachment ? [] : result.issues;
 
@@ -36,10 +37,11 @@ function buildSupplierEmail(result: ValidationResponse) {
       `${index + 1}. Row: ${row}`,
       `   Column / Field: ${issue.field}`,
       `   Severity: ${issue.severity.toUpperCase()}`,
+      issue.group ? `   Rule group: ${issue.group}` : "",
       `   Current value: ${issue.currentValue || "(blank)"}`,
       `   Issue: ${issue.issue}`,
       `   Recommended fix: ${issue.suggestedFix}`
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   });
 
   return [
@@ -55,9 +57,11 @@ function buildSupplierEmail(result: ValidationResponse) {
     `- Total rows reviewed: ${result.summary.totalRows}`,
     `- Rows with errors: ${result.summary.rowsWithErrors}`,
     `- Rows with warnings: ${result.summary.rowsWithWarnings}`,
+    `- Rows with suggestions: ${result.summary.rowsWithSuggestions}`,
     `- Total issues found: ${result.summary.totalIssues}`,
     `- Error count: ${errorCount}`,
     `- Warning count: ${warningCount}`,
+    `- Suggestion count: ${suggestionCount}`,
     "",
     hasAttachment
       ? [
@@ -84,7 +88,7 @@ export function CatalogUploader() {
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
   const [result, setResult] = useState<ValidationResponse | null>(null);
-  const [severity, setSeverity] = useState<"all" | "error" | "warning">("all");
+  const [severity, setSeverity] = useState<"all" | "error" | "warning" | "suggestion">("all");
   const [field, setField] = useState("all");
   const [query, setQuery] = useState("");
   const [emailCopied, setEmailCopied] = useState(false);
@@ -144,7 +148,7 @@ export function CatalogUploader() {
       result?.issues.filter((issue) => {
         const matchesSeverity = severity === "all" || issue.severity === severity;
         const matchesField = field === "all" || issue.field === field;
-        const searchable = `${issue.rowNumber} ${issue.field} ${issue.currentValue} ${issue.issue} ${issue.suggestedFix}`.toLowerCase();
+        const searchable = `${issue.rowNumber} ${issue.field} ${issue.currentValue} ${issue.severity} ${issue.group ?? ""} ${issue.issue} ${issue.suggestedFix}`.toLowerCase();
         return matchesSeverity && matchesField && (!lowerQuery || searchable.includes(lowerQuery));
       }) ?? []
     );
@@ -295,10 +299,11 @@ export function CatalogUploader() {
 
       {result ? (
         <section className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
             {[
               ["Total rows", result.summary.totalRows],
               ["Passed rows", result.summary.passedRows],
+              ["Suggestions", result.summary.rowsWithSuggestions],
               ["Warnings", result.summary.rowsWithWarnings],
               ["Errors", result.summary.rowsWithErrors],
               ["Total issues", result.summary.totalIssues]
@@ -316,7 +321,7 @@ export function CatalogUploader() {
             <CardHeader className="gap-4 lg:flex lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <CardTitle>Validation Results</CardTitle>
-                <CardDescription>Every issue by row, field, current value, severity, and recommended fix.</CardDescription>
+                <CardDescription>Every issue by row, field, current value, severity, rule group, and recommended fix.</CardDescription>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button onClick={downloadCatalogPackage}>
@@ -354,10 +359,11 @@ export function CatalogUploader() {
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
                   <Input className="pl-9" placeholder="Search issues, fields, or values" value={query} onChange={(event) => setQuery(event.target.value)} />
                 </div>
-                <select className="focus-ring h-10 rounded-md border border-input bg-background px-3 text-sm" value={severity} onChange={(event) => setSeverity(event.target.value as "all" | "error" | "warning")}>
+                <select className="focus-ring h-10 rounded-md border border-input bg-background px-3 text-sm" value={severity} onChange={(event) => setSeverity(event.target.value as "all" | "error" | "warning" | "suggestion")}>
                   <option value="all">All</option>
                   <option value="error">Errors</option>
                   <option value="warning">Warnings</option>
+                  <option value="suggestion">Suggestions</option>
                 </select>
                 <select className="focus-ring h-10 rounded-md border border-input bg-background px-3 text-sm" value={field} onChange={(event) => setField(event.target.value)}>
                   <option value="all">All fields</option>
@@ -372,13 +378,14 @@ export function CatalogUploader() {
               {filteredIssues.length ? (
                 <div className="overflow-hidden rounded-lg border">
                   <div className="max-h-[560px] overflow-auto">
-                    <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+                    <table className="w-full min-w-[1120px] border-collapse text-left text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
                         <tr>
                           <th className="px-3 py-3">Row</th>
                           <th className="px-3 py-3">Field</th>
                           <th className="px-3 py-3">Current value</th>
                           <th className="px-3 py-3">Severity</th>
+                          <th className="px-3 py-3">Rule group</th>
                           <th className="px-3 py-3">Issue</th>
                           <th className="px-3 py-3">Suggested fix</th>
                         </tr>
@@ -390,8 +397,9 @@ export function CatalogUploader() {
                             <td className="px-3 py-3">{issue.field}</td>
                             <td className="max-w-[220px] break-words px-3 py-3 text-muted-foreground">{issue.currentValue || "-"}</td>
                             <td className="px-3 py-3">
-                              <Badge tone={issue.severity === "error" ? "error" : "warning"}>{issue.severity}</Badge>
+                              <Badge tone={issue.severity}>{issue.severity}</Badge>
                             </td>
+                            <td className="max-w-[220px] px-3 py-3 text-muted-foreground">{issue.group || "-"}</td>
                             <td className="max-w-[320px] px-3 py-3">{issue.issue}</td>
                             <td className="max-w-[320px] px-3 py-3 text-muted-foreground">{issue.suggestedFix}</td>
                           </tr>
