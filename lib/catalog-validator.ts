@@ -415,9 +415,66 @@ function applyIssueStyle(cell: ExcelJS.Cell, issues: CatalogIssue[]) {
     .join("\n\n");
 }
 
+function styleIssueSeverityCell(row: ExcelJS.Row) {
+  const severity = String(row.getCell("severity").value ?? "").toLowerCase();
+  if (severity === "error") {
+    row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } };
+    row.getCell("severity").font = { bold: true, color: { argb: "FF991B1B" } };
+  }
+  if (severity === "warning") {
+    row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
+    row.getCell("severity").font = { bold: true, color: { argb: "FF92400E" } };
+  }
+  if (severity === "suggestion") {
+    row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFF6FF" } };
+    row.getCell("severity").font = { bold: true, color: { argb: "FF1D4ED8" } };
+  }
+}
+
+function addIssueWorksheet(workbook: ExcelJS.Workbook, name: string, issues: CatalogIssue[]) {
+  const sheet = workbook.addWorksheet(name);
+  sheet.columns = [
+    { header: "Row Number", key: "rowNumber", width: 12 },
+    { header: "Field", key: "field", width: 24 },
+    { header: "Current Value", key: "currentValue", width: 30 },
+    { header: "Severity", key: "severity", width: 12 },
+    { header: "Rule Group", key: "group", width: 34 },
+    { header: "Issue", key: "issue", width: 46 },
+    { header: "Suggested Fix", key: "suggestedFix", width: 46 }
+  ];
+  sheet.addRows(
+    issues.length
+      ? issues
+      : [
+          {
+            rowNumber: "",
+            field: "",
+            currentValue: "",
+            severity: "",
+            group: "",
+            issue: `No ${name.toLowerCase()} found.`,
+            suggestedFix: ""
+          }
+        ]
+  );
+  styleHeaderRow(sheet.getRow(1));
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  sheet.autoFilter = {
+    from: "A1",
+    to: "G1"
+  };
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    styleIssueSeverityCell(row);
+  });
+
+  return sheet;
+}
+
 async function buildReportWorkbook(fileName: string, summary: ValidationSummary, issues: CatalogIssue[], catalogRows: CatalogReviewRow[]) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Catalog Validator";
+  workbook.views = [{ x: 0, y: 0, width: 12000, height: 20000, firstSheet: 0, activeTab: 1, visibility: "visible" }];
 
   const summarySheet = workbook.addWorksheet("Summary");
   summarySheet.addRows([
@@ -435,43 +492,17 @@ async function buildReportWorkbook(fileName: string, summary: ValidationSummary,
   summarySheet.getCell("A1").font = { bold: true, size: 16 };
   summarySheet.addRow([]);
   summarySheet.addRow(["Report Tabs"]);
-  summarySheet.addRow(["Issues", "Complete issue list by row, field, current value, severity, rule group, issue, and suggested fix."]);
+  summarySheet.addRow(["Errors", "Blocking issues that must be corrected before submission. This tab opens first by default."]);
+  summarySheet.addRow(["Warnings", "Likely supplier-confirmation items and important review items."]);
+  summarySheet.addRow(["Suggestions", "Cleanup or improvement items that are not blockers."]);
+  summarySheet.addRow(["All Issues", "Complete issue list by row, field, current value, severity, rule group, issue, and suggested fix."]);
   summarySheet.addRow(["Catalog Review", "Catalog rows with issue cells highlighted red for errors, amber for warnings, and blue for suggestions."]);
   summarySheet.getCell("A10").font = { bold: true };
 
-  const issueSheet = workbook.addWorksheet("Issues");
-  issueSheet.columns = [
-    { header: "Row Number", key: "rowNumber", width: 12 },
-    { header: "Field", key: "field", width: 24 },
-    { header: "Current Value", key: "currentValue", width: 30 },
-    { header: "Severity", key: "severity", width: 12 },
-    { header: "Rule Group", key: "group", width: 34 },
-    { header: "Issue", key: "issue", width: 46 },
-    { header: "Suggested Fix", key: "suggestedFix", width: 46 }
-  ];
-  issueSheet.addRows(issues);
-  styleHeaderRow(issueSheet.getRow(1));
-  issueSheet.views = [{ state: "frozen", ySplit: 1 }];
-  issueSheet.autoFilter = {
-    from: "A1",
-    to: "G1"
-  };
-  issueSheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const severity = String(row.getCell("severity").value ?? "").toLowerCase();
-    if (severity === "error") {
-      row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } };
-      row.getCell("severity").font = { bold: true, color: { argb: "FF991B1B" } };
-    }
-    if (severity === "warning") {
-      row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
-      row.getCell("severity").font = { bold: true, color: { argb: "FF92400E" } };
-    }
-    if (severity === "suggestion") {
-      row.getCell("severity").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFF6FF" } };
-      row.getCell("severity").font = { bold: true, color: { argb: "FF1D4ED8" } };
-    }
-  });
+  addIssueWorksheet(workbook, "Errors", issues.filter((issue) => issue.severity === "error"));
+  addIssueWorksheet(workbook, "Warnings", issues.filter((issue) => issue.severity === "warning"));
+  addIssueWorksheet(workbook, "Suggestions", issues.filter((issue) => issue.severity === "suggestion"));
+  addIssueWorksheet(workbook, "All Issues", issues);
 
   const reviewSheet = workbook.addWorksheet("Catalog Review");
   reviewSheet.columns = [
