@@ -21,6 +21,7 @@ import {
 import { allowedLeadTimes } from "@/lib/catalog-rules";
 
 const CATCH_WEIGHT_REVIEW_GROUP = "Catch Weight / UOM Consistency Review";
+const PACK_CASE_SETUP_GROUP = "Pack / Case Setup";
 const WEIGHT_BASED_UOMS = new Set(["LBR", "LB", "KG", "G"]);
 
 type HeaderMatch = {
@@ -127,6 +128,22 @@ function appearsWeightPriced(value: string) {
 function hasFixedWeightPattern(value: string) {
   return /\b\d+(?:\.\d+)?\s*(?:X|x|×|\/)\s*\d+(?:\.\d+)?\s*(?:OZ|OUNCE|OUNCES|LB|LBR|LBS|KG|KGS|G|GRAM|GRAMS)\b/i.test(value) ||
     /\b\d+(?:\.\d+)?\s*(?:OZ|OUNCE|OUNCES|LB|LBR|LBS|KG|KGS|G|GRAM|GRAMS)\s*(?:CASE|CS|BOX|BAG)\b/i.test(value);
+}
+
+function isWholeNumberOnly(value: string) {
+  return /^[0-9]+$/.test(value.trim());
+}
+
+function containsPackOrWeightUnit(value: string) {
+  return /\b(LB|LBS|LBR|KG|G|GRAM|GRAMS|OZ|OUNCE|OUNCES|ML|L|LTR|LITER|LITRE|EA|EACH|CS|CASE|BG|BAG|BX|BOX|PK|PACK|CT|COUNT)\b/i.test(value);
+}
+
+function buildItemsPerCaseSuggestedFix(itemsPerCase: string, packSize: string) {
+  if (!packSize && containsPackOrWeightUnit(itemsPerCase)) {
+    return `Move "${itemsPerCase}" from Items Per Case to Pack Size, then enter the correct whole-number item count in Items Per Case. If the correct item count is unknown, ask the supplier to confirm.`;
+  }
+
+  return "Move the weight/size value to Pack Size and enter only the whole-number count in Items Per Case. If the correct item count is unknown, ask the supplier to confirm.";
 }
 
 function applyCatchWeightUomConsistencyReview(issues: CatalogIssue[], ctx: RowContext) {
@@ -247,8 +264,30 @@ function validateRow(ctx: RowContext) {
     );
   }
 
-  if (!isBlank(value("Items Per Case")) && !isNumeric(value("Items Per Case"))) {
-    addIssue(issues, ctx, "Items Per Case", "error", "Items Per Case must be numeric when provided.", "Enter a number such as 1, 6, or 12.");
+  if (isBlank(value("Items Per Case"))) {
+    addIssue(
+      issues,
+      ctx,
+      "Items Per Case",
+      "error",
+      "Missing Items Per Case. Items Per Case is required and must contain a whole number.",
+      "Enter the number of items in the case as a whole number only.",
+      PACK_CASE_SETUP_GROUP
+    );
+  } else if (!isWholeNumberOnly(value("Items Per Case"))) {
+    const itemsPerCase = value("Items Per Case");
+    const hasUnit = containsPackOrWeightUnit(itemsPerCase);
+    addIssue(
+      issues,
+      ctx,
+      "Items Per Case",
+      "error",
+      hasUnit
+        ? `Invalid Items Per Case. Items Per Case contains a weight or size value: "${itemsPerCase}".`
+        : `Invalid Items Per Case. Items Per Case contains an invalid value: "${itemsPerCase}".`,
+      buildItemsPerCaseSuggestedFix(itemsPerCase, value("Pack Size")),
+      PACK_CASE_SETUP_GROUP
+    );
   }
 
   if (isBlank(value("Pack Size"))) {
